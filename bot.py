@@ -371,13 +371,8 @@ async def cmd_stop(message: Message, bot: Bot):
 async def main():
     await db.init_db()
 
-    session = AiohttpSession(
-        timeout=ClientTimeout(total=60)
-    )
-
     bot = Bot(
         token=BOT_TOKEN,
-        session=session,
         default=DefaultBotProperties(parse_mode="HTML")
     )
 
@@ -391,7 +386,6 @@ async def main():
         except Exception:
             logger.exception("Polling қатесі")
             await asyncio.sleep(5)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
