@@ -155,17 +155,17 @@ async def cmd_start_deeplink(message: Message, command: CommandObject, bot: Bot)
             "Админ жариялаған сан шыққанда, оны басыңыз.",
             reply_markup=kb
         )
-except Exception:
-    logger.exception("Ойыншыға карта жіберілмеді")
+    except Exception:
+        logger.exception("Ойыншыға карта жіберілмеді")
 
-try:
-    await bot.send_message(
-        game["admin_id"],
-        f"👤 Жаңа ойыншы қосылды: @{username} (ойын {game_id})"
-    )
-except Exception:
-    logger.exception("Админге хабар жіберілмеді")
-@router.message(CommandStart())
+    try:
+        await bot.send_message(
+            game["admin_id"],
+            f"👤 Жаңа ойыншы қосылды: @{username} (ойын {game_id})"
+        )
+    except Exception:
+        logger.exception("Админге хабар жіберілмеді")
+    @router.message(CommandStart())
 async def cmd_start_plain(message: Message):
     await message.answer(
         "Сәлем! Bingo ботына қош келдіңіз 🎉\n\n"
