@@ -15,7 +15,7 @@ from aiogram.types import (
 
 import db
 from cardgen import check_bingo, generate_card, generate_marked, letter_for_number, render_card_image
-from config import BOT_TOKEN
+from config import ADMIN_IDS, BOT_TOKEN
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -66,6 +66,11 @@ async def get_bot_username(bot: Bot) -> str:
 @router.message(Command("newgame"))
 async def cmd_newgame(message: Message, bot: Bot):
     admin_id = message.from_user.id
+
+    if admin_id not in ADMIN_IDS:
+        await message.answer("⛔ Бұл команда тек админдерге арналған.")
+        return
+
     game_id = await db.create_game(admin_id)
     username = await get_bot_username(bot)
     link = f"https://t.me/{username}?start=game_{game_id}"
@@ -150,6 +155,11 @@ async def cmd_start_plain(message: Message):
 
 async def draw_numbers(message: Message, count: int):
     admin_id = message.from_user.id
+
+    if admin_id not in ADMIN_IDS:
+        await message.answer("⛔ Бұл команда тек админдерге арналған.")
+        return
+
     game = await db.get_active_game_by_admin(admin_id)
 
     if not game:
@@ -298,6 +308,11 @@ async def handle_bingo_win(bot: Bot, game: dict, player: dict, card, marked, win
 @router.message(Command("stop"))
 async def cmd_stop(message: Message, bot: Bot):
     admin_id = message.from_user.id
+
+    if admin_id not in ADMIN_IDS:
+        await message.answer("⛔ Бұл команда тек админдерге арналған.")
+        return
+
     game = await db.get_active_game_by_admin(admin_id)
 
     if not game:
@@ -327,7 +342,7 @@ async def main():
     dp = Dispatcher()
     dp.include_router(router)
 
-    #await bot.delete_webhook(drop_pending_updates=True)
+    await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
 
