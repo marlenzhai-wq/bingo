@@ -2,8 +2,6 @@ import asyncio
 import logging
 import random
 
-from aiohttp import ClientTimeout
-from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command, CommandObject, CommandStart
