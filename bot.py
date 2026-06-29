@@ -209,9 +209,10 @@ async def draw_numbers(message: Message, count: int):
         await db.add_called_number(game_id, number, letter)
         lines.append(f"{letter}-{number}")
 
-    await message.answer(
-        "\n".join(lines)
-    )
+    try:
+        await message.answer("\n".join(lines))
+    except Exception:
+        logger.exception("Сандарды жіберу мүмкін болмады")
 
 
 @router.message(Command("next"))
