@@ -2,6 +2,8 @@ import asyncio
 import logging
 import random
 
+from aiohttp import ClientTimeout
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command, CommandObject, CommandStart
@@ -368,11 +370,27 @@ async def cmd_stop(message: Message, bot: Bot):
 
 async def main():
     await db.init_db()
-    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+
+    session = AiohttpSession(
+        timeout=ClientTimeout(total=60)
+    )
+
+    bot = Bot(
+        token=BOT_TOKEN,
+        session=session,
+        default=DefaultBotProperties(parse_mode="HTML")
+    )
+
     dp = Dispatcher()
     dp.include_router(router)
 
-    await dp.start_polling(bot)
+    while True:
+        try:
+            await bot.delete_webhook(drop_pending_updates=True)
+            await dp.start_polling(bot)
+        except Exception:
+            logger.exception("Polling қатесі")
+            await asyncio.sleep(5)
 
 
 if __name__ == "__main__":
