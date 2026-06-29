@@ -165,7 +165,7 @@ async def cmd_start_deeplink(message: Message, command: CommandObject, bot: Bot)
         )
     except Exception:
         logger.exception("Админге хабар жіберілмеді")
-    @router.message(CommandStart())
+@router.message(CommandStart())
 async def cmd_start_plain(message: Message):
     await message.answer(
         "Сәлем! Bingo ботына қош келдіңіз 🎉\n\n"
