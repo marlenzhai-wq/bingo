@@ -128,9 +128,16 @@ async def cmd_start_deeplink(message: Message, command: CommandObject, bot: Bot)
     existing = await db.get_player(game_id, user_id)
 
     if existing:
-        await message.answer("Сіз бұл ойынға бұрын қосылған болыпсыз. Картаңыз төменде:")
-        kb = build_card_keyboard(game_id, existing["card"], existing["marked"])
-        await message.answer(card_header_text(), reply_markup=kb)
+        kb = build_card_keyboard(
+            game_id,
+            existing["card"],
+            existing["marked"]
+        )
+
+        await message.answer(
+            "Сіз бұл ойынға бұрын қосылған болыпсыз.",
+            reply_markup=kb
+        )
         return
 
     card = generate_card()
@@ -139,23 +146,25 @@ async def cmd_start_deeplink(message: Message, command: CommandObject, bot: Bot)
 
     await db.add_player(game_id, user_id, username, card, marked)
 
-    await message.answer(
-        "✅ Сіз ойынға қосылдыңыз!\n\nМіне сіздің жеке картаңыз. "
-        "Админ жариялаған сан шыққанда, оны баспаңмен белгілеңіз."
-    )
     kb = build_card_keyboard(game_id, card, marked)
-    await message.answer(card_header_text(), reply_markup=kb)
 
-    # Админге хабарлама
     try:
-        await bot.send_message(
-            game["admin_id"],
-            f"👤 Жаңа ойыншы қосылды: @{username} (ойын {game_id})",
+        await message.answer(
+            "✅ Сіз ойынға қосылдыңыз!\n\n"
+            "Міне сіздің жеке картаңыз.\n"
+            "Админ жариялаған сан шыққанда, оны басыңыз.",
+            reply_markup=kb
         )
-    except Exception:
-        logger.exception("Админге хабарлама жіберу мүмкін болмады")
+except Exception:
+    logger.exception("Ойыншыға карта жіберілмеді")
 
-
+try:
+    await bot.send_message(
+        game["admin_id"],
+        f"👤 Жаңа ойыншы қосылды: @{username} (ойын {game_id})"
+    )
+except Exception:
+    logger.exception("Админге хабар жіберілмеді")
 @router.message(CommandStart())
 async def cmd_start_plain(message: Message):
     await message.answer(
