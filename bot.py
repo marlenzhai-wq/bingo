@@ -14,7 +14,14 @@ from aiogram.types import (
 )
 
 import db
-from cardgen import check_bingo, generate_card, generate_marked, letter_for_number, render_card_image
+from cardgen import (
+    LETTERS,
+    RANGES,
+    check_bingo,
+    generate_card,
+    generate_marked,
+    render_card_image,
+)
 from config import ADMIN_IDS, BOT_TOKEN
 
 logging.basicConfig(level=logging.INFO)
@@ -29,6 +36,15 @@ router = Router()
 
 def build_card_keyboard(game_id: str, card, marked) -> InlineKeyboardMarkup:
     rows = []
+
+    # Жоғарғы "B I N G O" қатары — батырма түрінде көрсетіледі, бірақ
+    # басқанда ешқандай әрекет болмайды (тек безендіру/тақырып ретінде).
+    header_row = [
+        InlineKeyboardButton(text=letter, callback_data="noop")
+        for letter in LETTERS
+    ]
+    rows.append(header_row)
+
     for r in range(5):
         buttons = []
         for c in range(5):
@@ -51,7 +67,7 @@ def build_card_keyboard(game_id: str, card, marked) -> InlineKeyboardMarkup:
 
 
 def card_header_text() -> str:
-    return "Сіздің картаңыз:\n B   I   N   G   O"
+    return "Сіздің картаңыз:"
 
 
 async def get_bot_username(bot: Bot) -> str:
@@ -169,25 +185,23 @@ async def draw_numbers(message: Message, count: int):
         return
 
     game_id = game["id"]
-    called = await db.get_called_numbers(game_id)
-    remaining = [n for n in range(1, 76) if n not in called]
 
-    if not remaining:
-        await message.answer("Барлық сандар шығып қойды! Ойынды аяқтау үшін /stop қолданыңыз.")
-        return
-
-    count = min(count, len(remaining))
-    new_numbers = random.sample(remaining, count)
+    # Бір шығаруда бірдей әріп екі рет шықпауы керек (мыс. екі B қатар шықпайды),
+    # сондықтан count санына сай ӘРТҮРЛІ әріптер таңдаймыз (барлығы 5: B,I,N,G,O).
+    count = min(count, len(LETTERS))
+    selected_letters = random.sample(LETTERS, count)
 
     lines = []
-    for number in new_numbers:
-        letter = letter_for_number(number)
+    for letter in selected_letters:
+        lo, hi = RANGES[letter]
+        # Сан келесі шығаруларда қайталана алады, сондықтан мұнда тек кездейсоқ
+        # таңдаймыз — бұрын шыққан сандарды алып тастамаймыз.
+        number = random.randint(lo, hi)
         await db.add_called_number(game_id, number, letter)
         lines.append(f"{letter}-{number}")
 
     await message.answer(
-        "🎯 Шыққан сандар (тек сізге көрінеді, ойыншыларға өзіңіз жіберіңіз):\n\n"
-        + "\n".join(lines)
+        "\n".join(lines)
     )
 
 
@@ -214,6 +228,12 @@ async def cmd_next4(message: Message):
 # ---------------------------------------------------------------------------
 # Ойыншы батырманы басады
 # ---------------------------------------------------------------------------
+
+@router.callback_query(F.data == "noop")
+async def cb_noop(callback: CallbackQuery):
+    # B I N G O тақырып батырмалары — тек безендіру үшін, ешқандай әрекет жасамайды.
+    await callback.answer()
+
 
 @router.callback_query(F.data.startswith("pick:"))
 async def cb_pick_number(callback: CallbackQuery, bot: Bot):
