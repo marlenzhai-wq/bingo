@@ -213,14 +213,7 @@ async def cmd_start_deeplink(message: Message, command: CommandObject, bot: Bot)
     players = await db.get_players(game_id)
     logger.info("add_player кейін ойыншылар саны: %d (game=%s)", len(players), game_id)
 
-    await message.answer(
-        "✅ <b>Сіз ойынға қосылдыңыз!</b>\n\n"
-        "Мына картадан санды белгілей аласыз. "
-        "Кез келген санды баса аласыз — бір рет басса белгіленеді, "
-        "екінші рет басса белгі алынады.\n\n"
-        "⚠️ BINGO тек шын шыққан сандар ғана есептеледі!",
-        parse_mode="HTML",
-    )
+    
     kb = build_card_keyboard(game_id, card, marked)
     await message.answer("Сіздің картаңыз:", reply_markup=kb, parse_mode="HTML")
 
