@@ -366,9 +366,8 @@ async def draw_numbers(message: Message, count: int):
 
     total_called = len(called) + len(lines)
     await message.answer(
-        "🎯 <b>Шыққан сандар</b> (ойыншыларға өзіңіз жіберіңіз):\n\n"
-        + "\n".join(f"<b>{l}</b>" for l in lines)
-        + f"\n\n📊 Жалпы шыққан: {total_called}/75",
+        "🎯 <b>Шыққан сандар</b>:\n"
+        + "\n".join(f"<b>{l}</b>" for l in lines),
         parse_mode="HTML",
     )
 
