@@ -568,7 +568,7 @@ async def cmd_remove_admin(message: Message):
 
 
 @router.message(Command("admins"))
-async def cmd_admins(message: Message):
+async def cmd_admins(message: Message, bot: Bot):
     user_id = message.from_user.id
     if not await db.is_main_admin(user_id):
         await message.answer("⛔ Бұл команда тек <b>басты админге</b> арналған.",
@@ -581,9 +581,18 @@ async def cmd_admins(message: Message):
         return
 
     lines = []
-    for a in admins:
+    for i, a in enumerate(admins, 1):
         tag = " 👑 (басты)" if a["is_main"] else ""
-        lines.append(f"• <code>{a['user_id']}</code>{tag}")
+        try:
+            chat = await bot.get_chat(a["user_id"])
+            if chat.username:
+                name = f"@{chat.username}"
+            else:
+                full = " ".join(filter(None, [chat.first_name or "", chat.last_name or ""]))
+                name = full or str(a["user_id"])
+        except Exception:
+            name = str(a["user_id"])
+        lines.append(f"{i}. {name} (<code>{a['user_id']}</code>){tag}")
 
     await message.answer(
         "<b>Админдер тізімі:</b>\n\n" + "\n".join(lines),
