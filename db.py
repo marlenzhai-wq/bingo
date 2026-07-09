@@ -58,10 +58,25 @@ CREATE TABLE IF NOT EXISTS called_numbers (
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as conn:
+        # Кестелерді жасаймыз (бұрын жасалса — өзгертпейді)
         await conn.execute(CREATE_ADMINS)
         await conn.execute(CREATE_GAMES)
         await conn.execute(CREATE_PLAYERS)
         await conn.execute(CREATE_CALLED)
+
+        # ── Автоматты миграция ──────────────────────────────────────────────
+        # Ескі DB-де жаңа бағандар болмауы мүмкін — қауіпсіз қосамыз.
+        migrations = [
+            "ALTER TABLE games ADD COLUMN players_msg_id INTEGER",
+            "ALTER TABLE games ADD COLUMN status TEXT NOT NULL DEFAULT 'waiting'",
+            "ALTER TABLE admins ADD COLUMN is_main INTEGER NOT NULL DEFAULT 0",
+        ]
+        for sql in migrations:
+            try:
+                await conn.execute(sql)
+            except Exception:
+                pass  # Баған бұрыннан бар — елемейміз
+
         # Бастапқы басты админді бір рет қосамыз
         await conn.execute(
             "INSERT OR IGNORE INTO admins (user_id, is_main) VALUES (?, 1)",
