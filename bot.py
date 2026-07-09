@@ -1,9 +1,14 @@
+"""
+Bingo Bot — aiogram 3.x
+Барлық handler, callback және admin логикасы осы файлда.
+"""
 import asyncio
 import logging
 import random
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (
     BufferedInputFile,
@@ -15,95 +20,127 @@ from aiogram.types import (
 
 import db
 from cardgen import (
+    FREE,
     LETTERS,
     RANGES,
     check_bingo,
     generate_card,
     generate_marked,
+    is_real_bingo,
     render_card_image,
 )
-from config import ADMIN_IDS, BOT_TOKEN
+from config import BOT_TOKEN
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 router = Router()
 
-
 # ---------------------------------------------------------------------------
-# Көмекші функциялар
+# Утилиталар
 # ---------------------------------------------------------------------------
-
-def build_card_keyboard(game_id: str, card, marked) -> InlineKeyboardMarkup:
-    rows = []
-
-    # Жоғарғы "B I N G O" қатары — батырма түрінде көрсетіледі, бірақ
-    # басқанда ешқандай әрекет болмайды (тек безендіру/тақырып ретінде).
-    header_row = [
-        InlineKeyboardButton(text=letter, callback_data="noop")
-        for letter in LETTERS
-    ]
-    rows.append(header_row)
-
-    for r in range(5):
-        buttons = []
-        for c in range(5):
-            value = card[r][c]
-            is_marked = marked[r][c]
-            if value == "FREE":
-                text = "⭐FREE"
-            elif is_marked:
-                text = f"✅{value}"
-            else:
-                text = str(value)
-            buttons.append(
-                InlineKeyboardButton(
-                    text=text,
-                    callback_data=f"pick:{game_id}:{r}:{c}",
-                )
-            )
-        rows.append(buttons)
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def card_header_text() -> str:
-    return "Сіздің картаңыз:"
-
 
 async def get_bot_username(bot: Bot) -> str:
     me = await bot.get_me()
     return me.username
 
 
+def _players_list_text(players: list[dict]) -> str:
+    if not players:
+        lines = "  (ешкім жоқ)"
+    else:
+        lines = "\n".join(
+            f"{i + 1}. @{p['username']}" if p["username"] else f"{i + 1}. id{p['user_id']}"
+            for i, p in enumerate(players)
+        )
+    return f"👥 <b>Ойыншылар тізімі</b>\n\n{lines}\n\nБарлығы: {len(players)}"
+
+
+def _go_keyboard(game_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="▶️ GO — ойынды бастау",
+                             callback_data=f"go:{game_id}")
+    ]])
+
+
+def build_card_keyboard(game_id: str, card, marked) -> InlineKeyboardMarkup:
+    rows = []
+    # Тақырып: B I N G O батырмалары (тек безендіру)
+    rows.append([
+        InlineKeyboardButton(text=letter, callback_data="noop")
+        for letter in LETTERS
+    ])
+    for r in range(5):
+        row_btns = []
+        for c in range(5):
+            val = card[r][c]
+            is_marked = marked[r][c]
+            if val == FREE:
+                text = "⭐"
+            elif is_marked:
+                text = f"✅{val}"
+            else:
+                text = str(val)
+            row_btns.append(InlineKeyboardButton(
+                text=text,
+                callback_data=f"pick:{game_id}:{r}:{c}",
+            ))
+        rows.append(row_btns)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _edit_players_msg(bot: Bot, game: dict, players: list[dict]):
+    """Ойыншылар тізімі хабарламасын жаңартады (editMessageText)."""
+    msg_id = game.get("players_msg_id")
+    if not msg_id:
+        return
+    try:
+        await bot.edit_message_text(
+            chat_id=game["admin_id"],
+            message_id=msg_id,
+            text=_players_list_text(players),
+            reply_markup=_go_keyboard(game["id"]),
+            parse_mode="HTML",
+        )
+    except TelegramBadRequest:
+        pass  # Хабарлама өзгермеген болса немесе жойылған — елемейміз
+
 # ---------------------------------------------------------------------------
-# /newgame — админ ойын ашады
+# /newgame
 # ---------------------------------------------------------------------------
 
 @router.message(Command("newgame"))
 async def cmd_newgame(message: Message, bot: Bot):
-    admin_id = message.from_user.id
-
-    if admin_id not in ADMIN_IDS:
+    user_id = message.from_user.id
+    if not await db.is_admin(user_id):
         await message.answer("⛔ Бұл команда тек админдерге арналған.")
         return
 
-    game_id = await db.create_game(admin_id)
+    game_id = await db.create_game(user_id)
     username = await get_bot_username(bot)
     link = f"https://t.me/{username}?start=game_{game_id}"
 
     await message.answer(
-        "🎲 Жаңа Bingo ойыны ашылды!\n\n"
+        f"🎲 <b>Жаңа Bingo ойыны ашылды!</b>\n\n"
         f"Ойын ID: <code>{game_id}</code>\n\n"
-        "Ойыншыларды шақыру үшін мына сілтемені жіберіңіз:\n"
-        f"{link}\n\n"
-        "Сандарды шығару командалары (тек сізге көрінеді):\n"
-        "/next, /next2, /next3, /next4\n\n"
-        "Ойынды аяқтау: /stop"
+        f"Ойыншыларды шақыру сілтемесі:\n{link}\n\n"
+        f"Командалар:\n"
+        f"/next /next2 /next3 /next4 — сан шығару\n"
+        f"/go — ойынды бастау (немесе төмендегі батырма)\n"
+        f"/stop — ойынды аяқтау",
+        parse_mode="HTML",
     )
 
+    # Ойыншылар тізімі хабарламасы (GO батырмасымен)
+    list_msg = await message.answer(
+        _players_list_text([]),
+        reply_markup=_go_keyboard(game_id),
+        parse_mode="HTML",
+    )
+    await db.save_players_msg_id(game_id, list_msg.message_id)
 
 # ---------------------------------------------------------------------------
-# /start game_xxxxx — ойыншы кіреді (Deep Linking)
+# /start game_xxxxx (Deep Link) — ойыншы кіреді
 # ---------------------------------------------------------------------------
 
 @router.message(CommandStart(deep_link=True))
@@ -117,10 +154,17 @@ async def cmd_start_deeplink(message: Message, command: CommandObject, bot: Bot)
     game = await db.get_game(game_id)
 
     if not game:
-        await message.answer("❌ Бұл ойын табылмады. Сілтеме қате немесе ойын жойылған.")
+        await message.answer("❌ Ойын табылмады. Сілтеме қате немесе ойын жойылған.")
         return
 
-    if game["status"] != "active":
+    if game["status"] == "started":
+        await message.answer(
+            "⛔ <b>Бұл ойын басталып кетті.</b>\nҚосылу мүмкін емес.",
+            parse_mode="HTML",
+        )
+        return
+
+    if game["status"] == "finished":
         await message.answer("⚠️ Бұл ойын аяқталған.")
         return
 
@@ -128,43 +172,33 @@ async def cmd_start_deeplink(message: Message, command: CommandObject, bot: Bot)
     existing = await db.get_player(game_id, user_id)
 
     if existing:
-        kb = build_card_keyboard(
-            game_id,
-            existing["card"],
-            existing["marked"]
-        )
-
-        await message.answer(
-            "Сіз бұл ойынға бұрын қосылған болыпсыз.",
-            reply_markup=kb
-        )
+        await message.answer("Сіз бұл ойынға бұрын қосылған болыпсыз. Картаңыз:")
+        kb = build_card_keyboard(game_id, existing["card"], existing["marked"])
+        await message.answer("Сіздің картаңыз:", reply_markup=kb, parse_mode="HTML")
         return
 
     card = generate_card()
     marked = generate_marked()
-    username = message.from_user.username or message.from_user.full_name
+    uname = message.from_user.username or ""
 
-    await db.add_player(game_id, user_id, username, card, marked)
+    await db.add_player(game_id, user_id, uname, card, marked)
 
+    await message.answer(
+        "✅ <b>Сіз ойынға қосылдыңыз!</b>\n\n"
+        "Мына картадан санды белгілей аласыз. "
+        "Кез келген санды баса аласыз — бір рет басса белгіленеді, "
+        "екінші рет басса белгі алынады.\n\n"
+        "⚠️ BINGO тек шын шыққан сандар ғана есептеледі!",
+        parse_mode="HTML",
+    )
     kb = build_card_keyboard(game_id, card, marked)
+    await message.answer("Сіздің картаңыз:", reply_markup=kb, parse_mode="HTML")
 
-    try:
-        await message.answer(
-            "✅ Сіз ойынға қосылдыңыз!\n\n"
-            "Міне сіздің жеке картаңыз.\n"
-            "Админ жариялаған сан шыққанда, оны басыңыз.",
-            reply_markup=kb
-        )
-    except Exception:
-        logger.exception("Ойыншыға карта жіберілмеді")
+    # Ойыншылар тізімін жаңарту (editMessageText)
+    players = await db.get_players(game_id)
+    await _edit_players_msg(bot, game, players)
 
-    try:
-        await bot.send_message(
-            game["admin_id"],
-            f"👤 Жаңа ойыншы қосылды: @{username} (ойын {game_id})"
-        )
-    except Exception:
-        logger.exception("Админге хабар жіберілмеді")
+
 @router.message(CommandStart())
 async def cmd_start_plain(message: Message):
     await message.answer(
@@ -173,77 +207,164 @@ async def cmd_start_plain(message: Message):
         "Ойынға қосылу үшін админнен сілтеме сұраңыз."
     )
 
-
 # ---------------------------------------------------------------------------
-# /next, /next2, /next3, /next4 — админ сандарды шығарады
+# GO — ойын бастау (/go және батырма)
 # ---------------------------------------------------------------------------
 
-async def draw_numbers(message: Message, count: int):
-    admin_id = message.from_user.id
+async def _do_start_game(bot: Bot, game: dict):
+    """Ойынды 'started' күйіне ауыстырады."""
+    game_id = game["id"]
+    await db.set_game_status(game_id, "started")
 
-    if admin_id not in ADMIN_IDS:
+    # Ойыншылар тізімі хабарламасынан GO батырмасын алып тастаймыз
+    msg_id = game.get("players_msg_id")
+    if msg_id:
+        players = await db.get_players(game_id)
+        try:
+            await bot.edit_message_text(
+                chat_id=game["admin_id"],
+                message_id=msg_id,
+                text=_players_list_text(players) + "\n\n✅ <b>Ойын басталды!</b>",
+                reply_markup=None,
+                parse_mode="HTML",
+            )
+        except TelegramBadRequest:
+            pass
+
+
+@router.message(Command("go"))
+async def cmd_go(message: Message, bot: Bot):
+    user_id = message.from_user.id
+    if not await db.is_admin(user_id):
         await message.answer("⛔ Бұл команда тек админдерге арналған.")
         return
 
-    game = await db.get_active_game_by_admin(admin_id)
-
+    game = await db.get_nonfin_game_by_admin(user_id)
     if not game:
+        await message.answer("❌ Белсенді ойын жоқ. /newgame арқылы ашыңыз.")
+        return
+
+    if game["status"] == "started":
+        await message.answer("⚠️ Ойын қазірдің өзінде басталған.")
+        return
+
+    await _do_start_game(bot, game)
+    await message.answer(
+        "▶️ <b>Ойын басталды!</b>\nЖаңа сілтеме арқылы қосылу мүмкін емес.\n\n"
+        "Сандарды шығару: /next /next2 /next3 /next4",
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data.startswith("go:"))
+async def cb_go(callback: CallbackQuery, bot: Bot):
+    game_id = callback.data.split(":")[1]
+    game = await db.get_game(game_id)
+
+    if not game or game["admin_id"] != callback.from_user.id:
+        await callback.answer("⛔ Рұқсат жоқ.", show_alert=True)
+        return
+
+    if game["status"] == "started":
+        await callback.answer("⚠️ Ойын қазірдің өзінде басталған.", show_alert=True)
+        return
+
+    if game["status"] == "finished":
+        await callback.answer("⚠️ Ойын аяқталған.", show_alert=True)
+        return
+
+    await _do_start_game(bot, game)
+    await callback.answer("▶️ Ойын басталды!")
+    await bot.send_message(
+        game["admin_id"],
+        "▶️ <b>Ойын басталды!</b>\nСандарды шығару: /next /next2 /next3 /next4",
+        parse_mode="HTML",
+    )
+
+# ---------------------------------------------------------------------------
+# /next, /next2, /next3, /next4 — сандарды шығару (қайталанбайды)
+# ---------------------------------------------------------------------------
+
+async def draw_numbers(message: Message, count: int):
+    user_id = message.from_user.id
+    if not await db.is_admin(user_id):
+        await message.answer("⛔ Бұл команда тек админдерге арналған.")
+        return
+
+    game = await db.get_nonfin_game_by_admin(user_id)
+    if not game:
+        await message.answer("❌ Белсенді ойын жоқ. /newgame арқылы ашыңыз.")
+        return
+
+    if game["status"] == "waiting":
         await message.answer(
-            "❌ Сізде белсенді ойын жоқ. Алдымен /newgame командасын қолданыңыз."
+            "⚠️ Ойын әлі басталмаған. Алдымен /go немесе ▶️ GO батырмасын басыңыз."
         )
         return
 
     game_id = game["id"]
+    called = await db.get_called_numbers(game_id)
 
-    # Бір шығаруда бірдей әріп екі рет шықпауы керек (мыс. екі B қатар шықпайды),
-    # сондықтан count санына сай ӘРТҮРЛІ әріптер таңдаймыз (барлығы 5: B,I,N,G,O).
-    count = min(count, len(LETTERS))
-    selected_letters = random.sample(LETTERS, count)
+    # Әр бағанда (B,I,N,G,O) әлі шықпаған сандары бар бағандар
+    available: list[tuple[str, list[int]]] = []
+    for letter in LETTERS:
+        lo, hi = RANGES[letter]
+        remaining = [n for n in range(lo, hi + 1) if n not in called]
+        if remaining:
+            available.append((letter, remaining))
+
+    if not available:
+        await message.answer(
+            "🏁 Барлық сандар шығып қойды! Ойынды аяқтау үшін /stop қолданыңыз."
+        )
+        return
+
+    count = min(count, len(available))
+    # Бір шығаруда: ӘРТҮРЛІ бағандардан (letter), ал сандар – қайталанбаған
+    selected = random.sample(available, count)
 
     lines = []
-    for letter in selected_letters:
-        lo, hi = RANGES[letter]
-        # Сан келесі шығаруларда қайталана алады, сондықтан мұнда тек кездейсоқ
-        # таңдаймыз — бұрын шыққан сандарды алып тастамаймыз.
-        number = random.randint(lo, hi)
+    for letter, remaining in selected:
+        number = random.choice(remaining)
         await db.add_called_number(game_id, number, letter)
         lines.append(f"{letter}-{number}")
 
-    try:
-        await message.answer("\n".join(lines))
-    except Exception:
-        logger.exception("Сандарды жіберу мүмкін болмады")
+    total_called = len(called) + len(lines)
+    await message.answer(
+        "🎯 <b>Шыққан сандар</b> (ойыншыларға өзіңіз жіберіңіз):\n\n"
+        + "\n".join(f"<b>{l}</b>" for l in lines)
+        + f"\n\n📊 Жалпы шыққан: {total_called}/75",
+        parse_mode="HTML",
+    )
 
 
 @router.message(Command("next"))
 async def cmd_next(message: Message):
     await draw_numbers(message, 1)
 
-
 @router.message(Command("next2"))
 async def cmd_next2(message: Message):
     await draw_numbers(message, 2)
-
 
 @router.message(Command("next3"))
 async def cmd_next3(message: Message):
     await draw_numbers(message, 3)
 
-
 @router.message(Command("next4"))
 async def cmd_next4(message: Message):
     await draw_numbers(message, 4)
 
-
 # ---------------------------------------------------------------------------
-# Ойыншы батырманы басады
+# noop — B I N G O тақырып батырмалары
 # ---------------------------------------------------------------------------
 
 @router.callback_query(F.data == "noop")
 async def cb_noop(callback: CallbackQuery):
-    # B I N G O тақырып батырмалары — тек безендіру үшін, ешқандай әрекет жасамайды.
     await callback.answer()
 
+# ---------------------------------------------------------------------------
+# Ойыншы ұяшықты басады (toggle режимі)
+# ---------------------------------------------------------------------------
 
 @router.callback_query(F.data.startswith("pick:"))
 async def cb_pick_number(callback: CallbackQuery, bot: Bot):
@@ -251,8 +372,11 @@ async def cb_pick_number(callback: CallbackQuery, bot: Bot):
     row, col = int(row_s), int(col_s)
 
     game = await db.get_game(game_id)
-    if not game or game["status"] != "active":
+    if not game or game["status"] == "finished":
         await callback.answer("Бұл ойын аяқталған.", show_alert=True)
+        return
+    if game["status"] == "waiting":
+        await callback.answer("⚠️ Ойын әлі басталмаған.", show_alert=True)
         return
 
     user_id = callback.from_user.id
@@ -261,75 +385,86 @@ async def cb_pick_number(callback: CallbackQuery, bot: Bot):
         await callback.answer("Сіз бұл ойынға қосылмағансыз.", show_alert=True)
         return
 
-    card = player["card"]
+    card   = player["card"]
     marked = player["marked"]
-    value = card[row][col]
+    val    = card[row][col]
 
-    if value == "FREE":
-        await callback.answer("Бұл ұяшық автоматты түрде белгіленген ⭐")
+    if val == FREE:
+        await callback.answer("⭐ FREE ұяшығы автоматты белгіленген.")
         return
 
-    if marked[row][col]:
-        await callback.answer("Бұл сан қазір де белгіленген ✅")
-        return
-
-    is_called = await db.is_number_called(game_id, int(value))
-    if not is_called:
-        await callback.answer("❌ Бұл сан әлі шықпаған.")
-        return
-
-    marked[row][col] = True
+    # Toggle
+    marked[row][col] = not marked[row][col]
     await db.update_player_marked(game_id, user_id, marked)
 
     kb = build_card_keyboard(game_id, card, marked)
     try:
         await callback.message.edit_reply_markup(reply_markup=kb)
-    except Exception:
+    except TelegramBadRequest:
         pass
 
-    await callback.answer(f"✅ {value} белгіленді!")
+    if marked[row][col]:
+        await callback.answer(f"✅ {val} белгіленді!")
+    else:
+        await callback.answer(f"↩️ {val} белгісі алынды.")
+
+    # BINGO тексеру (тек белгілегенде)
+    if not marked[row][col]:
+        return
 
     win_cells = check_bingo(marked)
-    if win_cells and not player["won"]:
-        await handle_bingo_win(bot, game, player, card, marked, win_cells)
+    if not win_cells:
+        return
+
+    if player["won"]:
+        return
+
+    called_set = await db.get_called_numbers(game_id)
+    if not is_real_bingo(card, win_cells, called_set):
+        await callback.answer(
+            "❌ Bingo жоқ.\nҚате белгіленген сандар бар.",
+            show_alert=True,
+        )
+        return
+
+    # Шынайы BINGO!
+    await handle_bingo_win(bot, game, player, card, marked, list(win_cells), called_set)
 
 
-async def handle_bingo_win(bot: Bot, game: dict, player: dict, card, marked, win_cells):
-    game_id = game["id"]
-    user_id = player["user_id"]
+async def handle_bingo_win(
+    bot: Bot,
+    game: dict,
+    player: dict,
+    card, marked,
+    win_cells: list,
+    called_set: set[int],
+):
+    game_id  = game["id"]
+    user_id  = player["user_id"]
     username = player["username"] or str(user_id)
 
     await db.set_player_won(game_id, user_id)
 
-    # Ойыншыға хабарлама
+    # Ойыншыға
     try:
-        await bot.send_message(user_id, "🎉 Сіз BINGO жасадыңыз!")
+        await bot.send_message(user_id, "🎉 <b>Сіз BINGO жасадыңыз!</b>",
+                               parse_mode="HTML")
     except Exception:
         logger.exception("Ойыншыға хабарлама жіберу мүмкін болмады")
 
-    # Дәлел ретінде картаны сурет түрінде жасау
-    image_bytes = render_card_image(card, marked, win_cells)
-    photo = BufferedInputFile(image_bytes, filename=f"bingo_{game_id}_{user_id}.png")
+    # Жеңімпаз картасының суреті
+    img_bytes = render_card_image(card, marked, win_cells)
+    caption   = f"🏆 @{username} BINGO жасады!"
 
-    caption = f"🏆 @{username} BINGO жасады!"
-
-    # Админге сурет пен хабарлама
-    try:
-        await bot.send_photo(game["admin_id"], photo=photo, caption=caption)
-    except Exception:
-        logger.exception("Админге сурет жіберу мүмкін болмады")
-
-    # Барлық ойыншыларға хабарлау
-    players = await db.get_players(game_id)
-    for p in players:
-        if p["user_id"] == game["admin_id"]:
-            continue
-        photo2 = BufferedInputFile(image_bytes, filename=f"bingo_{game_id}_{user_id}.png")
+    # Тек жеңімпазға + ойын админіне
+    for target_id in {user_id, game["admin_id"]}:
+        photo = BufferedInputFile(
+            img_bytes, filename=f"bingo_{game_id}_{user_id}.png"
+        )
         try:
-            await bot.send_photo(p["user_id"], photo=photo2, caption=caption)
+            await bot.send_photo(target_id, photo=photo, caption=caption)
         except Exception:
-            logger.exception("Ойыншыға сурет жіберу мүмкін болмады")
-
+            logger.exception(f"{target_id}-ге сурет жіберу мүмкін болмады")
 
 # ---------------------------------------------------------------------------
 # /stop — ойынды аяқтау
@@ -337,30 +472,123 @@ async def handle_bingo_win(bot: Bot, game: dict, player: dict, card, marked, win
 
 @router.message(Command("stop"))
 async def cmd_stop(message: Message, bot: Bot):
-    admin_id = message.from_user.id
-
-    if admin_id not in ADMIN_IDS:
+    user_id = message.from_user.id
+    if not await db.is_admin(user_id):
         await message.answer("⛔ Бұл команда тек админдерге арналған.")
         return
 
-    game = await db.get_active_game_by_admin(admin_id)
-
+    game = await db.get_nonfin_game_by_admin(user_id)
     if not game:
-        await message.answer("❌ Сізде белсенді ойын жоқ.")
+        await message.answer("❌ Белсенді ойын жоқ.")
         return
 
     game_id = game["id"]
     await db.set_game_status(game_id, "finished")
+    called_set = await db.get_called_numbers(game_id)
 
     players = await db.get_players(game_id)
+
+    await message.answer(
+        f"🏁 <b>Ойын аяқталды!</b>\nБарлық ойыншыларға соңғы карталары жіберілуде...",
+        parse_mode="HTML",
+    )
+
     for p in players:
+        img_bytes = render_card_image(
+            p["card"], p["marked"],
+            win_cells=None,
+            called_set=called_set,   # ← дұрыс/қате бөлу режимі
+        )
+        photo = BufferedInputFile(
+            img_bytes,
+            filename=f"final_{game_id}_{p['user_id']}.png",
+        )
+        caption = (
+            "🏁 <b>Ойын аяқталды!</b>\n\n"
+            "🟢 Жасыл = дұрыс белгіленген\n"
+            "🔴 Қызыл = қате белгіленген\n"
+            "⚪ Ақ = белгіленбеген"
+        )
         try:
-            await bot.send_message(p["user_id"], "Ойын аяқталды.")
+            await bot.send_photo(p["user_id"], photo=photo,
+                                 caption=caption, parse_mode="HTML")
         except Exception:
-            logger.exception("Хабарлама жіберу мүмкін болмады")
+            logger.exception(f"{p['user_id']}-ге соңғы карта жіберу мүмкін болмады")
 
-    await message.answer(f"✅ Ойын ({game_id}) аяқталды. Барлық ойыншыларға хабарланды.")
+    await message.answer(
+        f"✅ Ойын ({game_id}) аяқталды. {len(players)} ойыншыға карта жіберілді."
+    )
 
+# ---------------------------------------------------------------------------
+# Админ басқару командалары (тек басты админ)
+# ---------------------------------------------------------------------------
+
+@router.message(Command("addadmin"))
+async def cmd_add_admin(message: Message):
+    user_id = message.from_user.id
+    if not await db.is_main_admin(user_id):
+        await message.answer("⛔ Бұл команда тек <b>басты админге</b> арналған.",
+                             parse_mode="HTML")
+        return
+
+    parts = message.text.strip().split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        await message.answer("Қолданыс: /addadmin <user_id>")
+        return
+
+    target = int(parts[1])
+    added = await db.add_admin(target)
+    if added:
+        await message.answer(f"✅ {target} админдерге қосылды.")
+    else:
+        await message.answer(f"⚠️ {target} бұрыннан админ.")
+
+
+@router.message(Command("removeadmin"))
+async def cmd_remove_admin(message: Message):
+    user_id = message.from_user.id
+    if not await db.is_main_admin(user_id):
+        await message.answer("⛔ Бұл команда тек <b>басты админге</b> арналған.",
+                             parse_mode="HTML")
+        return
+
+    parts = message.text.strip().split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        await message.answer("Қолданыс: /removeadmin <user_id>")
+        return
+
+    target = int(parts[1])
+    removed = await db.remove_admin(target)
+    if removed:
+        await message.answer(f"✅ {target} adminдер тізімінен шығарылды.")
+    else:
+        await message.answer(
+            f"⚠️ {target} тізімде жоқ немесе ол басты админ (өшіруге болмайды)."
+        )
+
+
+@router.message(Command("admins"))
+async def cmd_admins(message: Message):
+    user_id = message.from_user.id
+    if not await db.is_main_admin(user_id):
+        await message.answer("⛔ Бұл команда тек <b>басты админге</b> арналған.",
+                             parse_mode="HTML")
+        return
+
+    admins = await db.get_all_admins()
+    if not admins:
+        await message.answer("Тізім бос.")
+        return
+
+    lines = []
+    for a in admins:
+        tag = " 👑 (басты)" if a["is_main"] else ""
+        lines.append(f"• <code>{a['user_id']}</code>{tag}")
+
+    await message.answer(
+        "<b>Админдер тізімі:</b>\n\n" + "\n".join(lines),
+        parse_mode="HTML",
+    )
 
 # ---------------------------------------------------------------------------
 # main
@@ -368,15 +596,10 @@ async def cmd_stop(message: Message, bot: Bot):
 
 async def main():
     await db.init_db()
-
-    bot = Bot(
-        token=BOT_TOKEN,
-        default=DefaultBotProperties(parse_mode="HTML")
-    )
-
+    bot = Bot(token=BOT_TOKEN,
+              default=DefaultBotProperties(parse_mode="HTML"))
     dp = Dispatcher()
     dp.include_router(router)
-
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
