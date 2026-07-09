@@ -89,21 +89,34 @@ def build_card_keyboard(game_id: str, card, marked) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-async def _edit_players_msg(bot: Bot, game: dict, players: list[dict]):
-    """Ойыншылар тізімі хабарламасын жаңартады (editMessageText)."""
-    msg_id = game.get("players_msg_id")
+async def _edit_players_msg(bot: Bot, game_id: str, admin_id: int, players: list[dict]):
+    """Ойыншылар тізімі хабарламасын жаңартады (editMessageText).
+    game_id берілген кезде DB-ден players_msg_id-ті тікелей оқиды —
+    осылай ескі game dict-індегі None мәнін айналып өтеміз."""
+    # Ең соңғы players_msg_id-ті DB-ден алу
+    fresh_game = await db.get_game(game_id)
+    if not fresh_game:
+        return
+    msg_id = fresh_game.get("players_msg_id")
     if not msg_id:
+        logger.warning("_edit_players_msg: players_msg_id жоқ, game_id=%s", game_id)
         return
     try:
         await bot.edit_message_text(
-            chat_id=game["admin_id"],
+            chat_id=admin_id,
             message_id=msg_id,
             text=_players_list_text(players),
-            reply_markup=_go_keyboard(game["id"]),
+            reply_markup=_go_keyboard(game_id),
             parse_mode="HTML",
         )
-    except TelegramBadRequest:
-        pass  # Хабарлама өзгермеген болса немесе жойылған — елемейміз
+        logger.info("Ойыншылар тізімі жаңартылды: game=%s msg=%s", game_id, msg_id)
+    except TelegramBadRequest as e:
+        if "not modified" not in str(e).lower():
+            logger.warning("edit_message_text TelegramBadRequest: %s", e)
+        else:
+            logger.info("edit_message_text: хабарлама өзгермеді (not modified), елемейміз")
+    except Exception:
+        logger.exception("_edit_players_msg күтпеген қате")
 
 # ---------------------------------------------------------------------------
 # /newgame
@@ -114,6 +127,19 @@ async def cmd_newgame(message: Message, bot: Bot):
     user_id = message.from_user.id
     if not await db.is_admin(user_id):
         await message.answer("⛔ Бұл команда тек админдерге арналған.")
+        return
+
+    # Ескі белсенді ойын бар болса — жаңасын ашпау
+    existing = await db.get_nonfin_game_by_admin(user_id)
+    if existing:
+        from aiogram.utils.keyboard import InlineKeyboardBuilder
+        await message.answer(
+            f"⚠️ Сізде белсенді ойын бар:\n"
+            f"ID: <code>{existing['id']}</code>\n"
+            f"Статус: {existing['status']}\n\n"
+            f"Алдымен /stop арқылы аяқтаңыз.",
+            parse_mode="HTML",
+        )
         return
 
     game_id = await db.create_game(user_id)
@@ -183,6 +209,10 @@ async def cmd_start_deeplink(message: Message, command: CommandObject, bot: Bot)
 
     await db.add_player(game_id, user_id, uname, card, marked)
 
+    # Дерекқорға жазылғанын тексеру
+    players = await db.get_players(game_id)
+    logger.info("add_player кейін ойыншылар саны: %d (game=%s)", len(players), game_id)
+
     await message.answer(
         "✅ <b>Сіз ойынға қосылдыңыз!</b>\n\n"
         "Мына картадан санды белгілей аласыз. "
@@ -195,8 +225,8 @@ async def cmd_start_deeplink(message: Message, command: CommandObject, bot: Bot)
     await message.answer("Сіздің картаңыз:", reply_markup=kb, parse_mode="HTML")
 
     # Ойыншылар тізімін жаңарту (editMessageText)
-    players = await db.get_players(game_id)
-    await _edit_players_msg(bot, game, players)
+    # players жоғарыда add_player кейін алынды
+    await _edit_players_msg(bot, game_id, game["admin_id"], players)
 
 
 @router.message(CommandStart())
@@ -214,22 +244,27 @@ async def cmd_start_plain(message: Message):
 async def _do_start_game(bot: Bot, game: dict):
     """Ойынды 'started' күйіне ауыстырады."""
     game_id = game["id"]
+    admin_id = game["admin_id"]
     await db.set_game_status(game_id, "started")
 
-    # Ойыншылар тізімі хабарламасынан GO батырмасын алып тастаймыз
-    msg_id = game.get("players_msg_id")
+    # GO батырмасын алып тастап, "Ойын басталды!" деп жаңартамыз
+    fresh = await db.get_game(game_id)
+    msg_id = fresh.get("players_msg_id") if fresh else None
     if msg_id:
         players = await db.get_players(game_id)
         try:
             await bot.edit_message_text(
-                chat_id=game["admin_id"],
+                chat_id=admin_id,
                 message_id=msg_id,
                 text=_players_list_text(players) + "\n\n✅ <b>Ойын басталды!</b>",
                 reply_markup=None,
                 parse_mode="HTML",
             )
-        except TelegramBadRequest:
-            pass
+        except TelegramBadRequest as e:
+            if "not modified" not in str(e).lower():
+                logger.warning("_do_start_game edit қатесі: %s", e)
+        except Exception as e:
+            logger.error("_do_start_game edit күтпеген қате: %s", e)
 
 
 @router.message(Command("go"))
