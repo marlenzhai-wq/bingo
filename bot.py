@@ -532,9 +532,6 @@ async def cmd_stop(message: Message, bot: Bot):
         )
         caption = (
             "🏁 <b>Ойын аяқталды!</b>\n\n"
-            "🟢 Жасыл = дұрыс белгіленген\n"
-            "🔴 Қызыл = қате белгіленген\n"
-            "⚪ Ақ = белгіленбеген"
         )
         try:
             await bot.send_photo(p["user_id"], photo=photo,
