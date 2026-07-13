@@ -574,7 +574,7 @@ async def cmd_stop(message: Message, bot: Bot):
             filename=f"final_{game_id}_{p['user_id']}.png",
         )
         caption = (
-            "🏁 <b>Ойын аяқталды!</b>
+            "🏁 <b>Ойын аяқталды!</b>"
         )
         try:
             await bot.send_photo(p["user_id"], photo=photo,
