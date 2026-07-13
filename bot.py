@@ -45,12 +45,28 @@ async def get_bot_username(bot: Bot) -> str:
     return me.username
 
 
+def get_display_name(player: dict) -> str:
+    """Ойыншының атын дұрыс тәртіппен қайтарады:
+    1. @username
+    2. FirstName LastName
+    3. FirstName
+    4. ID: 123456789
+    """
+    if player.get("username"):
+        return f"@{player['username']}"
+    parts = [player.get("first_name") or "", player.get("last_name") or ""]
+    full = " ".join(p for p in parts if p).strip()
+    if full:
+        return full
+    return f"ID: {player['user_id']}"
+
+
 def _players_list_text(players: list[dict]) -> str:
     if not players:
         lines = "  (ешкім жоқ)"
     else:
         lines = "\n".join(
-            f"{i + 1}. @{p['username']}" if p["username"] else f"{i + 1}. id{p['user_id']}"
+            f"{i + 1}. {get_display_name(p)}"
             for i, p in enumerate(players)
         )
     return f"👥 <b>Ойыншылар тізімі</b>\n\n{lines}\n\nБарлығы: {len(players)}"
@@ -205,15 +221,24 @@ async def cmd_start_deeplink(message: Message, command: CommandObject, bot: Bot)
 
     card = generate_card()
     marked = generate_marked()
-    uname = message.from_user.username or ""
+    uname  = message.from_user.username  or ""
+    fname  = message.from_user.first_name or ""
+    lname  = message.from_user.last_name  or ""
 
-    await db.add_player(game_id, user_id, uname, card, marked)
+    await db.add_player(game_id, user_id, uname, fname, lname, card, marked)
 
     # Дерекқорға жазылғанын тексеру
     players = await db.get_players(game_id)
     logger.info("add_player кейін ойыншылар саны: %d (game=%s)", len(players), game_id)
 
-    
+    await message.answer(
+        "✅ <b>Сіз ойынға қосылдыңыз!</b>\n\n"
+        "Мына картадан санды белгілей аласыз. "
+        "Кез келген санды баса аласыз — бір рет басса белгіленеді, "
+        "екінші рет басса белгі алынады.\n\n"
+        "⚠️ BINGO тек шын шыққан сандар ғана есептеледі!",
+        parse_mode="HTML",
+    )
     kb = build_card_keyboard(game_id, card, marked)
     await message.answer("Сіздің картаңыз:", reply_markup=kb, parse_mode="HTML")
 
@@ -359,8 +384,9 @@ async def draw_numbers(message: Message, count: int):
 
     total_called = len(called) + len(lines)
     await message.answer(
-        "🎯 <b>Шыққан сандар</b>:\n"
-        + "\n".join(f"<b>{l}</b>" for l in lines),
+        "🎯 <b>Шыққан сандар</b> (ойыншыларға өзіңіз жіберіңіз):\n\n"
+        + "\n".join(f"<b>{l}</b>" for l in lines)
+        + f"\n\n📊 Жалпы шыққан: {total_called}/75",
         parse_mode="HTML",
     )
 
@@ -466,9 +492,9 @@ async def handle_bingo_win(
     win_cells: list,
     called_set: set[int],
 ):
-    game_id  = game["id"]
-    user_id  = player["user_id"]
-    username = player["username"] or str(user_id)
+    game_id      = game["id"]
+    user_id      = player["user_id"]
+    display_name = get_display_name(player)
 
     await db.set_player_won(game_id, user_id)
 
@@ -481,7 +507,7 @@ async def handle_bingo_win(
 
     # Жеңімпаз картасының суреті
     img_bytes = render_card_image(card, marked, win_cells)
-    caption   = f"🏆 @{username} BINGO жасады!"
+    caption   = f"🏆 {display_name} BINGO жасады!"
 
     # Тек жеңімпазға + ойын админіне
     for target_id in {user_id, game["admin_id"]}:
@@ -492,6 +518,24 @@ async def handle_bingo_win(
             await bot.send_photo(target_id, photo=photo, caption=caption)
         except Exception:
             logger.exception(f"{target_id}-ге сурет жіберу мүмкін болмады")
+
+# ---------------------------------------------------------------------------
+# /карта — ойыншы өз картасын қайта алады
+# ---------------------------------------------------------------------------
+
+@router.message(Command("card"))
+async def cmd_karta(message: Message):
+    user_id = message.from_user.id
+    result = await db.get_player_active_game(user_id)
+    if not result:
+        await message.answer(
+            "❌ Сіз қазір ешқандай белсенді ойынға қатысып тұрған жоқсыз."
+        )
+        return
+    game_id, player = result
+    kb = build_card_keyboard(game_id, player["card"], player["marked"])
+    await message.answer("Сіздің картаңыз:", reply_markup=kb)
+
 
 # ---------------------------------------------------------------------------
 # /stop — ойынды аяқтау
@@ -532,6 +576,9 @@ async def cmd_stop(message: Message, bot: Bot):
         )
         caption = (
             "🏁 <b>Ойын аяқталды!</b>\n\n"
+            "🟢 Жасыл = дұрыс белгіленген\n"
+            "🔴 Қызыл = қате белгіленген\n"
+            "⚪ Ақ = белгіленбеген"
         )
         try:
             await bot.send_photo(p["user_id"], photo=photo,
@@ -609,13 +656,15 @@ async def cmd_admins(message: Message, bot: Bot):
         tag = " 👑 (басты)" if a["is_main"] else ""
         try:
             chat = await bot.get_chat(a["user_id"])
+            # get_display_name тәрізді тәртіп
             if chat.username:
                 name = f"@{chat.username}"
             else:
-                full = " ".join(filter(None, [chat.first_name or "", chat.last_name or ""]))
-                name = full or str(a["user_id"])
+                parts = [chat.first_name or "", chat.last_name or ""]
+                full  = " ".join(p for p in parts if p).strip()
+                name  = full if full else f"ID: {a['user_id']}"
         except Exception:
-            name = str(a["user_id"])
+            name = f"ID: {a['user_id']}"
         lines.append(f"{i}. {name} (<code>{a['user_id']}</code>){tag}")
 
     await message.answer(
