@@ -384,9 +384,8 @@ async def draw_numbers(message: Message, count: int):
 
     total_called = len(called) + len(lines)
     await message.answer(
-        "🎯 <b>Шыққан сандар</b> (ойыншыларға өзіңіз жіберіңіз):\n\n"
-        + "\n".join(f"<b>{l}</b>" for l in lines)
-        + f"\n\n📊 Жалпы шыққан: {total_called}/75",
+        "🎯 <b>Шыққан сандар</b>:\n"
+        + "\n".join(f"<b>{l}</b>" for l in lines),
         parse_mode="HTML",
     )
 
@@ -575,10 +574,7 @@ async def cmd_stop(message: Message, bot: Bot):
             filename=f"final_{game_id}_{p['user_id']}.png",
         )
         caption = (
-            "🏁 <b>Ойын аяқталды!</b>\n\n"
-            "🟢 Жасыл = дұрыс белгіленген\n"
-            "🔴 Қызыл = қате белгіленген\n"
-            "⚪ Ақ = белгіленбеген"
+            "🏁 <b>Ойын аяқталды!</b>
         )
         try:
             await bot.send_photo(p["user_id"], photo=photo,
