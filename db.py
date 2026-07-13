@@ -33,12 +33,14 @@ CREATE TABLE IF NOT EXISTS games (
 
 CREATE_PLAYERS = """
 CREATE TABLE IF NOT EXISTS players (
-    game_id   TEXT    NOT NULL,
-    user_id   INTEGER NOT NULL,
-    username  TEXT,
-    card      TEXT    NOT NULL,
-    marked    TEXT    NOT NULL,
-    won       INTEGER NOT NULL DEFAULT 0,
+    game_id    TEXT    NOT NULL,
+    user_id    INTEGER NOT NULL,
+    username   TEXT,
+    first_name TEXT,
+    last_name  TEXT,
+    card       TEXT    NOT NULL,
+    marked     TEXT    NOT NULL,
+    won        INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (game_id, user_id)
 );
 """
@@ -70,6 +72,8 @@ async def init_db():
             "ALTER TABLE games ADD COLUMN players_msg_id INTEGER",
             "ALTER TABLE games ADD COLUMN status TEXT NOT NULL DEFAULT 'waiting'",
             "ALTER TABLE admins ADD COLUMN is_main INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE players ADD COLUMN first_name TEXT",
+            "ALTER TABLE players ADD COLUMN last_name TEXT",
         ]
         for sql in migrations:
             try:
@@ -198,13 +202,15 @@ async def save_players_msg_id(game_id: str, msg_id: int):
 # ---------------------------------------------------------------------------
 
 async def add_player(game_id: str, user_id: int, username: str,
+                     first_name: str, last_name: str,
                      card: list, marked: list):
     async with aiosqlite.connect(DB_PATH) as conn:
         await conn.execute(
             "INSERT OR IGNORE INTO players "
-            "(game_id, user_id, username, card, marked, won) "
-            "VALUES (?, ?, ?, ?, ?, 0)",
+            "(game_id, user_id, username, first_name, last_name, card, marked, won) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
             (game_id, user_id, username or "",
+             first_name or "", last_name or "",
              json.dumps(card), json.dumps(marked)),
         )
         await conn.commit()
@@ -224,6 +230,26 @@ async def get_player(game_id: str, user_id: int) -> dict | None:
         d["card"] = json.loads(d["card"])
         d["marked"] = json.loads(d["marked"])
         return d
+
+
+async def get_player_active_game(user_id: int):
+    """Ойыншының белсенді (finished емес) ойынын және оның картасын қайтарады."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cur = await conn.execute(
+            "SELECT p.*, g.id AS game_id FROM players p "
+            "JOIN games g ON g.id = p.game_id "
+            "WHERE p.user_id = ? AND g.status != 'finished' "
+            "ORDER BY g.created_at DESC LIMIT 1",
+            (user_id,),
+        )
+        row = await cur.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["card"]   = json.loads(d["card"])
+        d["marked"] = json.loads(d["marked"])
+        return d["game_id"], d
 
 
 async def get_players(game_id: str) -> list[dict]:
